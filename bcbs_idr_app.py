@@ -270,7 +270,9 @@ make it within 500 words"""
         try:
             client = genai.Client(api_key=GEMINI_API_KEY)
             gemini_models = [
+                "gemini-3-flash-preview",
                 "gemini-2.5-flash",
+                "gemini-3.1-flash-lite-preview",
                 "gemini-2.5-flash-lite"
             ]
 
