@@ -111,8 +111,9 @@ def extract_fields(eob_text):
     date_patterns = [
         r"Date.?of.?Service[s]?:?\s*(\d{1,2}/\d{1,2}/\d{2,4})",
         r"Service Date[s]?:?\s*(\d{1,2}/\d{1,2}/\d{2,4})",
-        r"Service Dates?\s*[-–]\s*(\d{1,2}/\d{1,2}/\d{2,4})",
-        r"Date Range[:\s]+(\d{1,2}/\d{1,2}/\d{2,4})"
+        r"Service Dates?\s*[:\-–\s]+(\d{1,2}/\d{1,2}/\d{2,4})",
+        r"Date Range[:\s]+(\d{1,2}/\d{1,2}/\d{2,4})",
+        r"Dates? of Service[:\s]+(\d{1,2}/\d{1,2}/\d{2,4})"
     ]
     date_of_service = find_field(date_patterns, eob_text, "Date")
 
