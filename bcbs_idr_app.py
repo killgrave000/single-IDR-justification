@@ -12,7 +12,12 @@ from docx.shared import Pt, Inches
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from docx.oxml.ns import qn
 from huggingface_hub import InferenceClient
+import os  # <-- ADD THIS
 
+# --- FIX "INVALID PORT" NETWORK ERROR ---
+for proxy_var in ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY']:
+    if proxy_var in os.environ:
+        del os.environ[proxy_var]
 
 st.session_state.setdefault("download_ready", False)
 # --- NEW SESSION STATE VARIABLES ---
@@ -60,9 +65,11 @@ st.write("Upload EOB PDF, MRN PDF, and Prompt TXT file to generate a formatted B
 # FILE UPLOADS
 # -----------------------------
 # -----------------------------
+# -----------------------------
 # FILE UPLOADS & INPUTS
 # -----------------------------
-eob_file = st.file_uploader("📄 Upload EOB PDF", type=["pdf"])
+# Add accept_multiple_files=True to the EOB uploader
+eob_files = st.file_uploader("📄 Upload EOB PDFs", type=["pdf"], accept_multiple_files=True)
 mrn_file = st.file_uploader("🧾 Upload MRN PDF", type=["pdf"])
 target_cpt_code_input = st.text_input("🔢 Enter Target CPT Code (e.g., 99283, 99284)", value="")
 
@@ -150,22 +157,45 @@ def extract_fields(eob_text):
     ]
     drg_code = find_field(drg_patterns, eob_text, "DRG Code")
 
-    # ---------------- BILLING PROVIDER ----------------
+# ---------------- BILLING PROVIDER ----------------
+    # Updated to capture multi-line names and table formats in PDFs
     billing_patterns = [
-        r"Billing Provider Name\s*([A-Za-z0-9\s.,&'\-]+)",
-        r"Billing Provider\s*([A-Za-z0-9\s.,&'\-]+)",
-        r"Provider Name\s*([A-Za-z0-9\s.,&'\-]+)"
+        # Multi-line/Table patterns with broader anchors and positive lookahead
+        # Prioritize Payee Name as it often contains the full legal name in table formats
+        r"Payee Name[\"\, \s\n]*([\s\S]*?)(?=\"?\s*(?:Check Date|Line Level|Prior Notification|NPI|Address|Billing Provider|Rendering Provider))",
+        r"Billing Provider Name[\"\, \s\n]*([\s\S]*?)(?=\"?\s*(?:Billing Provider NPI|Rendering Provider|Payee Name|Address|NPI|City|State|Zip|Phone|Check Date|Tax ID|Provider|Control Number))",
+        r"Billing Provider[\"\, \s\n]*([\s\S]*?)(?=\"?\s*(?:Billing Provider NPI|Rendering Provider|Payee Name|Address|NPI|City|State|Zip))",
+        r"Provider Name[\"\, \s\n]*([\s\S]*?)(?=\"?\s*(?:Billing Provider NPI|Rendering Provider|Payee Name|Address|NPI|City|State|Zip))",
+        # Fallback to greedy character set (now includes quotes and commas for cleaning)
+        r"Billing Provider[:\s]*([A-Za-z0-9\s.,&'\"\-]+)",
+        r"Provider Name[:\s]*([A-Za-z0-9\s.,&'\"\-]+)"
     ]
 
     billing_provider = find_field(billing_patterns, eob_text, "Billing Provider")
 
-    # Remove trailing noise
+    # Clean up the extracted string (remove PDF table artifacts like quotes, commas, and newlines)
+    billing_provider = re.sub(r'[\"\,\n]+', ' ', billing_provider)
+    
+    # Remove interleaved labels that might have been caught by the broad capture
+    billing_provider = re.sub(r'\b(?:Payee Name|Billing Provider Name|Provider Name|Rendering Provider Name)\b', ' ', billing_provider, flags=re.IGNORECASE)
+    
+    billing_provider = re.sub(r'\s+', ' ', billing_provider).strip()
+
+    # Remove trailing noise just in case it over-captures
     billing_provider = re.sub(
-        r"\s*(NPI.*|Other Carrier.*|Rendering Provider.*|Check Date.*|Address.*|City.*|State.*|Zip.*)$",
+        r"\s*(NPI.*|Other Carrier.*|Rendering Provider.*|Check Date.*|Address.*|City.*|State.*|Zip.*|Tax ID.*)$",
         "",
         billing_provider,
         flags=re.IGNORECASE,
     ).strip()
+
+    # Deduplicate repeated name suffixes (common in table wraps like "CENTER LLC CENTER LLC")
+    words = billing_provider.split()
+    if len(words) >= 4:
+        for i in range(1, len(words) // 2 + 1):
+            if words[-i:] == words[-2*i:-i]:
+                billing_provider = " ".join(words[:-i])
+                break
 
     return date_of_service, ranked_codes, drg_code, billing_provider
 
@@ -268,16 +298,21 @@ make it within 500 words"""
 
     if GEMINI_API_KEY:
         try:
-            client = genai.Client(api_key=GEMINI_API_KEY)
+            # Add http_options to force REST connection
+            client = genai.Client(
+                api_key=GEMINI_API_KEY,
+                http_options={'api_version': 'v1beta'}
+            )
             gemini_models = [
                 "gemini-2.5-flash",
                 "gemini-2.5-flash-lite"
                 "gemini-3-flash-preview",
-                "gemini-3.1-flash-lite-preview" 
+                "gemini-3.1-flash-lite-preview"      
             ]
 
             for i, model_name in enumerate(gemini_models):
                 try:
+                    print(f"Attempting Gemini model: {model_name}...")
                     response = client.models.generate_content(
                         model=model_name,
                         contents=combined_prompt
@@ -317,13 +352,23 @@ make it within 500 words"""
 
 def generate_bcbs_justification_letter(date, hcpcs, drg, billing_provider, mrn_summary):
     """Build the complete letter text with variables inserted."""
-    hcpcs_list = ','.join(hcpcs) if hcpcs else 'N/A'
+    
+    # --- SORT HCPCS CODES (Emergency codes first) ---
     emergency_codes = []
+    other_codes = []
     for c in hcpcs:
         base_code = re.sub(r"-.*", "", c)
         if re.match(r"99(28[1-5]|29[1-2])", base_code):
-            emergency_codes.append(base_code)
-    emergency_code_text = emergency_codes[0] if emergency_codes else "99284"
+            emergency_codes.append(c) # Append the full code (e.g. 99285-25)
+        else:
+            other_codes.append(c)
+            
+    # Combine lists: Emergency codes first, then everything else
+    sorted_hcpcs = emergency_codes + other_codes
+    hcpcs_list = ', '.join(sorted_hcpcs) if sorted_hcpcs else 'N/A'
+    
+    # Grab just the base emergency code for the modifier 25 sentence
+    emergency_code_text = re.sub(r"-.*", "", emergency_codes[0]) if emergency_codes else "99284"
 
     return f"""
 This letter is submitted in support of our Independent Dispute Resolution (IDR) request under the No Surprises Act (NSA). We are challenging the reimbursement amount determined by BCBS for the emergency services rendered on **{date}**. The payment issued by BCBS does not adequately reflect the level of care provided, nor does it comply with NSA transparency requirements.
@@ -469,20 +514,37 @@ def create_docx_with_full_letter(full_letter):
 
 
 # -----------------------------
+# -----------------------------
 # MAIN WORKFLOW
 # -----------------------------
 if st.button("🚀 Run", use_container_width=True):
-    # Now it checks for the EOB, MRN, AND the typed CPT code
-    if not (eob_file and mrn_file and target_cpt_code_input.strip()):
-        st.error("Please upload all required files (EOB and MRN) and enter a Target CPT Code.")
+    # Now it checks for the EOB list, MRN, AND the typed CPT code
+    if not (eob_files and mrn_file and target_cpt_code_input.strip()):
+        st.error("Please upload all required files (at least one EOB and MRN) and enter a Target CPT Code.")
     else:
         with st.spinner("Processing... Please wait..."):
             try:
-                eob_text = extract_text_from_pdf(eob_file)
                 mrn_text = extract_text_from_pdf(mrn_file)
 
-                # Extract standard fields from EOB
-                date_of_service, hcpcs_codes, drg_code, billing_provider = extract_fields(eob_text)
+                # Initialize variables to hold data
+                all_hcpcs_codes = []
+                date_of_service, drg_code, billing_provider = "", "", ""
+
+                # Loop through ALL uploaded EOB files
+                for i, eob in enumerate(eob_files):
+                    eob_text = extract_text_from_pdf(eob)
+                    extracted_date, hcpcs_codes, extracted_drg, extracted_billing = extract_fields(eob_text)
+
+                    # 1. Combine all unique codes from EVERY EOB
+                    for code in hcpcs_codes:
+                        if code not in all_hcpcs_codes:
+                            all_hcpcs_codes.append(code)
+
+                    # 2. Grab standard fields from ONLY THE FIRST EOB (Index 0)
+                    if i == 0:
+                        date_of_service = extracted_date
+                        drg_code = extracted_drg
+                        billing_provider = extracted_billing
 
                 # --- AUTO-COMMA LOGIC ---
                 raw_input = target_cpt_code_input.strip()
@@ -492,8 +554,8 @@ if st.button("🚀 Run", use_container_width=True):
                 # Pass the targeted code to generate the customized summary
                 mrn_summary = generate_mrn_summary(mrn_text, target_cpt_code)
 
-                # Generate the final full letter
-                full_letter = generate_bcbs_justification_letter(date_of_service, hcpcs_codes, drg_code, billing_provider, mrn_summary)
+                # Generate the final full letter using the COMBINED codes
+                full_letter = generate_bcbs_justification_letter(date_of_service, all_hcpcs_codes, drg_code, billing_provider, mrn_summary)
 
                 # Save everything to session state so it doesn't disappear
                 st.session_state["original_letter"] = full_letter
@@ -501,8 +563,8 @@ if st.button("🚀 Run", use_container_width=True):
                 st.session_state["doc_generated"] = True
 
                 # --- NEW FILENAME EXTRACTOR ---
-                # This grabs the first word (e.g. "MID289655") and removes ".pdf" just in case it's a 1-word filename
-                first_word = eob_file.name.split()[0].replace(".pdf", "").replace(".PDF", "")
+                # Grabs the first word from the FIRST uploaded EOB file
+                first_word = eob_files[0].name.split()[0].replace(".pdf", "").replace(".PDF", "")
                 st.session_state["file_prefix"] = first_word
 
             except Exception as e:
@@ -519,7 +581,8 @@ def revert_to_original():
 
 # This runs if a document has been successfully generated
 if st.session_state.get("doc_generated"):
-    st.success("✅ Automation complete!")
+    llm_info = st.session_state.get("llm_used", "Unknown")
+    st.success(f"✅ Automation complete! (Model: {llm_info})")
     st.subheader("📜 Review and Edit BCBS Justification Letter")
     st.caption("You can edit the text directly in the box below. Make sure to click 'Save Edits' before downloading.")
 
