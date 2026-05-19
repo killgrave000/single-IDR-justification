@@ -68,8 +68,8 @@ st.write("Upload EOB PDF, MRN PDF, and Prompt TXT file to generate a formatted B
 # -----------------------------
 # FILE UPLOADS & INPUTS
 # -----------------------------
-# Add accept_multiple_files=True to the EOB uploader
-eob_files = st.file_uploader("📄 Upload EOB PDFs", type=["pdf"], accept_multiple_files=True)
+multiple_eobs = st.toggle("Enable Multiple EOB Upload", value=True)
+eob_files = st.file_uploader("📄 Upload EOB PDFs", type=["pdf"], accept_multiple_files=multiple_eobs)
 mrn_file = st.file_uploader("🧾 Upload MRN PDF", type=["pdf"])
 target_cpt_code_input = st.text_input("🔢 Enter Target CPT Code (e.g., 99283, 99284)", value="")
 
@@ -525,6 +525,10 @@ if st.button("🚀 Run", use_container_width=True):
     else:
         with st.spinner("Processing... Please wait..."):
             try:
+                # Normalize eob_files to a list if multiple uploads is disabled
+                if eob_files and not isinstance(eob_files, list):
+                    eob_files = [eob_files]
+
                 mrn_text = extract_text_from_pdf(mrn_file)
 
                 # Initialize variables to hold data
