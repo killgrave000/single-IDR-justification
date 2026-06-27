@@ -286,8 +286,7 @@ Structure the response as follows:
 **Instructions:**
 * Use professional, billing-focused language (e.g., "profound physiological instability," "corroborated by," "substantiated by").
 * Be specific with data points from the file (e.g., Creatinine 1.4 mg/dL, WBC 15.1, etc.).
-* Format exactly like the example provided in your training data.
-make it within 500 words"""
+* Format exactly like the example provided in your training data."""
 
     mrn_text = _truncate_for_llm(mrn_text, max_chars=18000)
     combined_prompt = (
