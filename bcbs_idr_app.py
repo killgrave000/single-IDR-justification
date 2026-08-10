@@ -13,6 +13,15 @@ from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from docx.oxml.ns import qn
 from huggingface_hub import InferenceClient
 import os  # <-- ADD THIS
+import html
+
+try:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
 
 # --- FIX "INVALID PORT" NETWORK ERROR ---
 for proxy_var in ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY']:
@@ -277,7 +286,7 @@ Structure the response as follows:
 
 **III. CPT Code Justification**
 * Justify the following specific codes based on the evidence in the chart: **{target_cpt_code}**
-    * For each code listed, provide a distinct bullet point explaining the specific medical necessity and chart evidence that supports it (e.g., high complexity MDM, specific procedure necessity, interpretation of complex tests).
+    * For each code listed, provide a distinct bullet point explaining the specific medical necessity and chart evidence that supports it. Do not use bold text for the bullet points.
 
 **IV. Conclusion**
 * Conclude with a single, high-impact paragraph starting with exactly this phrase: "The medical record clearly demonstrates that this encounter was not a routine evaluation of [Chief Complaint]."
@@ -291,7 +300,7 @@ Structure the response as follows:
     mrn_text = _truncate_for_llm(mrn_text, max_chars=18000)
     combined_prompt = (
         f"{prompt_text}\n\n---\n\n{mrn_text}\n\n"
-        "Format output using **bold** headings and line breaks for clarity."
+        "Format output using **bold** section headings and line breaks for clarity. Do not use bold text inside bullet points."
     )
 
     last_gemini_error = None
@@ -318,7 +327,7 @@ Structure the response as follows:
                         contents=combined_prompt
                     )
                     st.session_state["llm_used"] = model_name
-                    return response.text.strip()
+                    return format_summary_bullets(response.text.strip())
                 except Exception as model_error:
                     last_gemini_error = model_error
                     if i < len(gemini_models) - 1:
@@ -336,7 +345,7 @@ Structure the response as follows:
     try:
         out = _hf_generate(combined_prompt, HF_TOKEN, HF_MODEL)
         st.session_state["llm_used"] = f"hf:{HF_MODEL}"
-        return out
+        return format_summary_bullets(out)
     except Exception as e3:
         msg = str(e3).lower()
         if "403" in msg and "inference providers" in msg:
@@ -443,6 +452,44 @@ We therefore respectfully request that the certified IDR entity issue a determin
 
 
 # -----------------------------
+# HELPER FOR BULLET BOLDING
+# -----------------------------
+def fix_bullet_title_bolding(s):
+    """Ensure that for bullet points with a title ending in a colon, ONLY the title part before the colon is bolded."""
+    s_trimmed = s.strip()
+    bullet_prefix = ""
+    if s_trimmed.startswith("•"):
+        bullet_prefix = "• "
+        content = s_trimmed[1:].strip()
+    elif s_trimmed.startswith("* "):
+        bullet_prefix = "* "
+        content = s_trimmed[2:].strip()
+    elif s_trimmed.startswith("- "):
+        bullet_prefix = "- "
+        content = s_trimmed[2:].strip()
+    else:
+        return s
+
+    if ":" in content:
+        title_part, rest_part = content.split(":", 1)
+        clean_title = re.sub(r"\*+", "", title_part).strip()
+        clean_rest = re.sub(r"\*+", "", rest_part).strip()
+        if clean_rest:
+            return f"{bullet_prefix}**{clean_title}:** {clean_rest}"
+        else:
+            return f"{bullet_prefix}**{clean_title}:**"
+    return f"{bullet_prefix}{re.sub(r'\*+', '', content)}"
+
+
+def format_summary_bullets(summary_text):
+    if not summary_text:
+        return summary_text
+    lines = summary_text.split("\n")
+    processed_lines = [fix_bullet_title_bolding(line) for line in lines]
+    return "\n".join(processed_lines)
+
+
+# -----------------------------
 # DOCX CREATION FUNCTIONS
 # -----------------------------
 def parse_bold_segments(paragraph, text):
@@ -459,7 +506,7 @@ def parse_bold_segments(paragraph, text):
 
 def add_formatted_paragraph(doc, text):
     """Handle headings, bullets, and normal paragraphs."""
-    s = text.strip()
+    s = fix_bullet_title_bolding(text.strip())
     if not s:
         doc.add_paragraph("")
         return
@@ -510,6 +557,98 @@ def create_docx_with_full_letter(full_letter):
     doc.save(output)
     output.seek(0)
     return output
+
+
+# -----------------------------
+# PDF CREATION FUNCTIONS
+# -----------------------------
+def format_markdown_for_reportlab(text):
+    """Convert markdown formatting (**bold**) and special chars to ReportLab XML format."""
+    parts = text.split("**")
+    formatted_parts = []
+    for i, part in enumerate(parts):
+        escaped = html.escape(part)
+        if i % 2 == 1 and i < len(parts) - 1:  # Inside **...** and properly closed
+            formatted_parts.append(f"<b>{escaped}</b>")
+        else:
+            formatted_parts.append(escaped)
+    res = "".join(formatted_parts)
+    return res.replace("*", "")
+
+
+def create_pdf_with_full_letter(full_letter):
+    """Generate final PDF with formatting."""
+    output = BytesIO()
+    doc = SimpleDocTemplate(
+        output,
+        pagesize=letter,
+        leftMargin=54,
+        rightMargin=54,
+        topMargin=54,
+        bottomMargin=54
+    )
+
+    styles = getSampleStyleSheet()
+
+    normal_style = ParagraphStyle(
+        'CustomNormal',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=10.5,
+        leading=14,
+        spaceAfter=6
+    )
+
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=12.5,
+        leading=16,
+        spaceBefore=10,
+        spaceAfter=6,
+        keepWithNext=True
+    )
+
+    bullet_style = ParagraphStyle(
+        'CustomBullet',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=10.5,
+        leading=14,
+        leftIndent=20,
+        spaceAfter=4
+    )
+
+    story = []
+
+    for line in full_letter.split("\n"):
+        s = fix_bullet_title_bolding(line.strip())
+        if not s:
+            story.append(Spacer(1, 6))
+            continue
+
+        # Headings
+        if s.startswith("### ") or re.match(r"^[A-Z][A-Za-z\s&]+:$", s):
+            clean_heading = s.replace("### ", "").strip(":").strip()
+            formatted_h = format_markdown_for_reportlab(clean_heading)
+            story.append(Paragraph(f"<u><b>{formatted_h}</b></u>", heading_style))
+            continue
+
+        # Bulleted lists
+        if s.startswith("•") or s.startswith("* "):
+            clean_bullet = s.replace("•", "").replace("* ", "").strip()
+            formatted_b = format_markdown_for_reportlab(clean_bullet)
+            story.append(Paragraph(f"&bull; {formatted_b}", bullet_style))
+            continue
+
+        # Regular text
+        formatted_text = format_markdown_for_reportlab(s)
+        story.append(Paragraph(formatted_text, normal_style))
+
+    doc.build(story)
+    output.seek(0)
+    return output.getvalue()
 
 
 # -----------------------------
@@ -611,22 +750,27 @@ if st.session_state.get("doc_generated"):
             use_container_width=True
         )
 
-    # Generate DOCX from the current state of the edited text
-    output_doc = create_docx_with_full_letter(st.session_state["edited_letter"])
+    # Generate PDF from the current state of the edited text
+    if REPORTLAB_AVAILABLE:
+        output_pdf = create_pdf_with_full_letter(st.session_state["edited_letter"])
+    else:
+        st.error("The 'reportlab' package is required for PDF generation. Please run `pip install reportlab`.")
+        output_pdf = b""
 
     st.markdown("<br>", unsafe_allow_html=True) # Adding a little space
 
     # Construct the dynamic file name
     prefix = st.session_state.get("file_prefix", "")
-    dynamic_file_name = f"{prefix}_BCBS_Justification_for_IDR.docx" if prefix else "BCBS_Justification_for_IDR.docx"
+    dynamic_file_name = f"{prefix}_BCBS_Justification_for_IDR.pdf" if prefix else "BCBS_Justification_for_IDR.pdf"
 
     # 5. Download Button
     st.download_button(
-        label="📥 Download as Word Document (.docx)",
-        data=output_doc,
+        label="📥 Download as PDF (.pdf)",
+        data=output_pdf,
         file_name=dynamic_file_name,
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        mime="application/pdf",
         use_container_width=True,
-        key="download_docx_button",
-        help="Download the generated Word document (remains available after click)."
+        key="download_pdf_button",
+        help="Download the generated PDF document (remains available after click)."
     )
+
