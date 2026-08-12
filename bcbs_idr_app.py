@@ -136,7 +136,7 @@ def extract_fields(eob_text):
     emergency_pattern = r"99(28[1-5]|29[1-2])"
 
     for line in lines:
-        code_match = re.search(r"(?:HCPCS|CPT|^|\s)([012789]\d{4}[A-Z]?)(?:\s|$)", line)
+        code_match = re.search(r"(?:HCPCS|CPT|^|\s)([012789]\d{4}[A-Z]?|0\d{3}[A-Z])(?:\s|$)", line)
         if not code_match:
             continue
 
