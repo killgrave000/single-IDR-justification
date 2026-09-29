@@ -5,8 +5,10 @@ from google import genai
 from google.genai import types
 from docx import Document
 from io import BytesIO
-import pytesseract
-from pdf2image import convert_from_bytes
+# pyrefly: ignore [missing-import]
+import easyocr
+import pypdfium2 as pdfium
+import numpy as np
 from PIL import Image
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
@@ -52,16 +54,7 @@ if not GEMINI_API_KEY and not HF_TOKEN:
 import platform
 import shutil
 
-# Cross-platform Tesseract configuration
-if platform.system() == "Windows":
-    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-else:
-    # On Linux (Streamlit Cloud), find tesseract in PATH
-    tess_path = shutil.which("tesseract")
-    if tess_path:
-        pytesseract.pytesseract.tesseract_cmd = tess_path
-    else:
-        print("⚠️ Tesseract not found on system PATH. OCR fallback may fail.")
+# Tesseract configuration removed since easyocr is used natively
 
 # -----------------------------
 # STREAMLIT FRONT END SETUP
@@ -99,9 +92,15 @@ def extract_text_from_pdf(uploaded_file):
     except Exception:
         pass
     uploaded_file.seek(0)
-    images = convert_from_bytes(uploaded_file.read())
-    for img in images:
-        text += pytesseract.image_to_string(img) + "\n"
+    pdf = pdfium.PdfDocument(uploaded_file)
+    reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+    for i in range(len(pdf)):
+        page = pdf[i]
+        image = page.render(scale=2).to_pil()
+        results = reader.readtext(np.array(image))
+        for bbox, t, conf in results:
+            text += t + " "
+        text += "\n"
     return text
 
 
@@ -136,7 +135,7 @@ def extract_fields(eob_text):
     emergency_pattern = r"99(28[1-5]|29[1-2])"
 
     for line in lines:
-        code_match = re.search(r"(?:HCPCS|CPT|^|\s)([012789]\d{4}[A-Z]?|0\d{3}[A-Z])(?:\s|$)", line)
+        code_match = re.search(r"(?:HCPCS|CPT|^|\s)([012456789]\d{4}[A-Z]?|0\d{3}[A-Z])(?:\s|$)", line)
         if not code_match:
             continue
 
