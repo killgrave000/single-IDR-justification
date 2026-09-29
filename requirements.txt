@@ -2,8 +2,8 @@ streamlit
 pdfplumber
 google-genai
 python-docx
-pytesseract
-pdf2image
+easyocr
+pypdfium2
 Pillow
 huggingface-hub>=0.25.2
 reportlab
