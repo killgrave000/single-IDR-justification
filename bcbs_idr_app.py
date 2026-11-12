@@ -760,7 +760,7 @@ if st.session_state.get("doc_generated"):
 
     # Construct the dynamic file name
     prefix = st.session_state.get("file_prefix", "")
-    dynamic_file_name = f"{prefix}_BCBS_Justification_for_IDR.pdf" if prefix else "BCBS_Justification_for_IDR.pdf"
+    dynamic_file_name = f"{prefix}_Justification_for_IDR.pdf" if prefix else "BCBS_Justification_for_IDR.pdf"
 
     # 5. Download Button
     st.download_button(
